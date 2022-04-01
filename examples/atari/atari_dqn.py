@@ -1,7 +1,7 @@
 import argparse
 import os
 import pprint
-
+import datetime
 import numpy as np
 import torch
 from atari_network import DQN
@@ -13,12 +13,26 @@ from tianshou.env import ShmemVectorEnv
 from tianshou.policy import DQNPolicy
 from tianshou.trainer import offpolicy_trainer
 from tianshou.utils import TensorboardLogger, WandbLogger
+from tianshou.utils import TensorboardLogger
+from utils.recorder import Recorder
 
+'''
+import time
+a = time.time()
+
+b = time.time()
+
+tmp = b-a
+
+c = []
+c.append(tmp)
+
+mean(c)
+'''
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='PongNoFrameskip-v4')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--task', type=str, default='SpaceInvadersNoFrameskip-v4')
     parser.add_argument('--eps-test', type=float, default=0.005)
     parser.add_argument('--eps-train', type=float, default=1.)
     parser.add_argument('--eps-train-final', type=float, default=0.05)
@@ -27,14 +41,14 @@ def get_args():
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--n-step', type=int, default=3)
     parser.add_argument('--target-update-freq', type=int, default=500)
-    parser.add_argument('--epoch', type=int, default=100)
+    parser.add_argument('--epoch', type=int, default=100000000000000000)
     parser.add_argument('--step-per-epoch', type=int, default=100000)
     parser.add_argument('--step-per-collect', type=int, default=10)
     parser.add_argument('--update-per-step', type=float, default=0.1)
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--training-num', type=int, default=10)
     parser.add_argument('--test-num', type=int, default=10)
-    parser.add_argument('--logdir', type=str, default='log')
+    parser.add_argument('--logdir', type=str, default='/mnt/lustre/nieyunpeng/tianshou_spaceinvader_dqn/log')
     parser.add_argument('--render', type=float, default=0.)
     parser.add_argument(
         '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu'
@@ -71,7 +85,7 @@ def make_atari_env_watch(args):
     )
 
 
-def test_dqn(args=get_args()):
+def test_dqn(seed, recorder, args=get_args()):
     env = make_atari_env(args)
     args.state_shape = env.observation_space.shape or env.observation_space.n
     args.action_shape = env.action_space.shape or env.action_space.n
@@ -86,10 +100,10 @@ def test_dqn(args=get_args()):
         [lambda: make_atari_env_watch(args) for _ in range(args.test_num)]
     )
     # seed
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    train_envs.seed(args.seed)
-    test_envs.seed(args.seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    train_envs.seed(seed)
+    test_envs.seed(seed)
     # define model
     net = DQN(*args.state_shape, args.action_shape, args.device).to(args.device)
     optim = torch.optim.Adam(net.parameters(), lr=args.lr)
@@ -118,7 +132,13 @@ def test_dqn(args=get_args()):
     train_collector = Collector(policy, train_envs, buffer, exploration_noise=True)
     test_collector = Collector(policy, test_envs, exploration_noise=True)
     # log
-    log_path = os.path.join(args.logdir, args.task, 'dqn')
+    # log
+    t0 = datetime.datetime.now().strftime("%m%d_%H%M%S")
+    log_file = f'seed_{seed}_{t0}-{args.task.replace("-", "_")}_dqn'
+    log_path = os.path.join(args.logdir, args.task, 'dqn', log_file)
+    writer = SummaryWriter(log_path)
+    writer.add_text("args", str(args))
+    logger = TensorboardLogger(writer)
     if args.logger == "tensorboard":
         writer = SummaryWriter(log_path)
         writer.add_text("args", str(args))
@@ -138,6 +158,8 @@ def test_dqn(args=get_args()):
     def stop_fn(mean_rewards):
         if env.spec.reward_threshold:
             return mean_rewards >= env.spec.reward_threshold
+        elif 'SpaceInvaders' in args.task:
+            return mean_rewards >= 750
         elif 'Pong' in args.task:
             return mean_rewards >= 20
         else:
@@ -168,7 +190,7 @@ def test_dqn(args=get_args()):
         print("Setup test envs ...")
         policy.eval()
         policy.set_eps(args.eps_test)
-        test_envs.seed(args.seed)
+        test_envs.seed(seed)
         if args.save_buffer_name:
             print(f"Generate buffer with size {args.buffer_size}")
             buffer = VectorReplayBuffer(
@@ -220,8 +242,17 @@ def test_dqn(args=get_args()):
     )
 
     pprint.pprint(result)
-    watch()
+    if recorder:
+        recorder.add("train_iter", result['gradient_step'])
+        recorder.add("env_step", result['train_step'])
+    # watch()
 
 
 if __name__ == '__main__':
-    test_dqn(get_args())
+    seed = int(os.environ.get("SEED")) if os.environ.get("SEED") else 0
+    print(seed)
+    task_name = "tianshou_spaceinvader_dqn"
+    r = Recorder(task_name, seed)
+    r.start()
+    test_dqn(seed, recorder=r, args=get_args())
+    r.record()

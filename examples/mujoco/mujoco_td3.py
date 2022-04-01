@@ -18,12 +18,12 @@ from tianshou.trainer import offpolicy_trainer
 from tianshou.utils import TensorboardLogger
 from tianshou.utils.net.common import Net
 from tianshou.utils.net.continuous import Actor, Critic
+from utils.recorder import Recorder
 
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='Ant-v3')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--task', type=str, default='Hopper-v3')
     parser.add_argument('--buffer-size', type=int, default=1000000)
     parser.add_argument('--hidden-sizes', type=int, nargs='*', default=[256, 256])
     parser.add_argument('--actor-lr', type=float, default=3e-4)
@@ -35,7 +35,7 @@ def get_args():
     parser.add_argument('--noise-clip', type=float, default=0.5)
     parser.add_argument('--update-actor-freq', type=int, default=2)
     parser.add_argument("--start-timesteps", type=int, default=25000)
-    parser.add_argument('--epoch', type=int, default=200)
+    parser.add_argument('--epoch', type=int, default=1000000000)
     parser.add_argument('--step-per-epoch', type=int, default=5000)
     parser.add_argument('--step-per-collect', type=int, default=1)
     parser.add_argument('--update-per-step', type=int, default=1)
@@ -43,7 +43,7 @@ def get_args():
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--training-num', type=int, default=1)
     parser.add_argument('--test-num', type=int, default=10)
-    parser.add_argument('--logdir', type=str, default='log')
+    parser.add_argument('--logdir', type=str, default='/mnt/lustre/nieyunpeng/tianshou_mujoco_log')
     parser.add_argument('--render', type=float, default=0.)
     parser.add_argument(
         '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu'
@@ -58,7 +58,7 @@ def get_args():
     return parser.parse_args()
 
 
-def test_td3(args=get_args()):
+def test_td3(seed, recorder, args=get_args()):
     env = gym.make(args.task)
     args.state_shape = env.observation_space.shape or env.observation_space.n
     args.action_shape = env.action_space.shape or env.action_space.n
@@ -81,10 +81,10 @@ def test_td3(args=get_args()):
         [lambda: gym.make(args.task) for _ in range(args.test_num)]
     )
     # seed
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    train_envs.seed(args.seed)
-    test_envs.seed(args.seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    train_envs.seed(seed)
+    test_envs.seed(seed)
     # model
     net_a = Net(args.state_shape, hidden_sizes=args.hidden_sizes, device=args.device)
     actor = Actor(
@@ -110,6 +110,12 @@ def test_td3(args=get_args()):
     critic2 = Critic(net_c2, device=args.device).to(args.device)
     critic2_optim = torch.optim.Adam(critic2.parameters(), lr=args.critic_lr)
 
+    def stop_fn(mean_rewards):
+        if 'Hopper' in args.task:
+            return mean_rewards >= 3000
+        else:
+            return False
+            
     policy = TD3Policy(
         actor,
         actor_optim,
@@ -142,7 +148,7 @@ def test_td3(args=get_args()):
     train_collector.collect(n_step=args.start_timesteps, random=True)
     # log
     t0 = datetime.datetime.now().strftime("%m%d_%H%M%S")
-    log_file = f'seed_{args.seed}_{t0}-{args.task.replace("-", "_")}_td3'
+    log_file = f'seed_{seed}_{t0}-{args.task.replace("-", "_")}_td3'
     log_path = os.path.join(args.logdir, args.task, 'td3', log_file)
     writer = SummaryWriter(log_path)
     writer.add_text("args", str(args))
@@ -162,20 +168,29 @@ def test_td3(args=get_args()):
             args.step_per_collect,
             args.test_num,
             args.batch_size,
+            stop_fn=stop_fn,
             save_fn=save_fn,
             logger=logger,
             update_per_step=args.update_per_step,
             test_in_train=False
         )
         pprint.pprint(result)
+        if recorder:
+            recorder.add("train_iter", result['gradient_step'])
+            recorder.add("env_step", result['train_step'])
 
     # Let's watch its performance!
     policy.eval()
-    test_envs.seed(args.seed)
+    test_envs.seed(seed)
     test_collector.reset()
     result = test_collector.collect(n_episode=args.test_num, render=args.render)
     print(f'Final reward: {result["rews"].mean()}, length: {result["lens"].mean()}')
 
 
 if __name__ == '__main__':
-    test_td3()
+    seed = int(os.environ.get("SEED")) if os.environ.get("SEED") else 0
+    task_name = "tianshou_hopper_td3"
+    r = Recorder(task_name, seed)
+    r.start()
+    test_td3(seed, recorder=r, args=get_args())
+    r.record()

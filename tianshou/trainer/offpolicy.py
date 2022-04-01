@@ -147,7 +147,7 @@ def offpolicy_trainer(
                             t.set_postfix(**data)
                             return gather_info(
                                 start_time, train_collector, test_collector,
-                                test_result["rew"], test_result["rew_std"]
+                                test_result["rew"], test_result["rew_std"], gradient_step
                             )
                         else:
                             policy.train()
@@ -186,8 +186,8 @@ def offpolicy_trainer(
         save_fn(policy)
 
     if test_collector is None:
-        return gather_info(start_time, train_collector, None, 0.0, 0.0)
+        return gather_info(start_time, train_collector, None, 0.0, 0.0, gradient_step)
     else:
         return gather_info(
-            start_time, train_collector, test_collector, best_reward, best_reward_std
+            start_time, train_collector, test_collector, best_reward, best_reward_std, gradient_step
         )
